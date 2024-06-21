@@ -6,12 +6,11 @@
 
 // The pcapdump binary implements a tcpdump-like command line tool with gopacket
 // using pcap as a backend data collection mechanism.
-// 
+//
 // Use tcpassembly.go in the gpacket reassembly directory instead of the tcpassembly directory.
 // HTTP protocol analysis, the request and response start flags need to be detected to prevent packet leakage.
 // Author: asmcos
 // Date: 2018
-//
 package main
 
 import (
@@ -20,21 +19,21 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
-	"net/url"
 	"net/textproto"
+	"net/url"
 	"os"
 	"os/signal"
 	"runtime/pprof"
 	"strings"
 	"sync"
 	"time"
-	"encoding/json"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/examples/util"
@@ -43,9 +42,8 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/google/gopacket/reassembly"
 
-    "github.com/asmcos/requests"
-
-    //_ "net/http/pprof"
+	"github.com/asmcos/requests"
+	//_ "net/http/pprof"
 )
 
 var maxcount = flag.Int("c", -1, "Only grab this many packets, then exit")
@@ -68,11 +66,11 @@ var writeincomplete = flag.Bool("writeincomplete", false, "Write incomplete resp
 var hexdump = flag.Bool("dump", false, "Dump HTTP request/response as hex")
 var hexdumppkt = flag.Bool("dumppkt", false, "Dump packet as hex")
 
-var djslen = flag.Int("dumpjs",0,"Display response javascript format length")
-var dhtmllen = flag.Int("dumphtml",0,"Display response html format length")
+var djslen = flag.Int("dumpjs", 0, "Display response javascript format length")
+var dhtmllen = flag.Int("dumphtml", 0, "Display response html format length")
 
-var danystr = flag.String("dumpanystr","text/plain","Display response ContentType,e.g. text/html")
-var danylen = flag.Int("dumpanylen",0,"Display response dumpanystr format length")
+var danystr = flag.String("dumpanystr", "text/plain", "Display response ContentType,e.g. text/html")
+var danylen = flag.Int("dumpanylen", 0, "Display response dumpanystr format length")
 
 // capture
 var iface = flag.String("i", "eth0", "Interface to read packets from")
@@ -88,7 +86,7 @@ var serverurl = flag.String("serverurl", "", "save data to remote server: http:/
 var signalChan chan os.Signal
 var sysexit bool = false
 
-var clientDeviceid  string = ""
+var clientDeviceid string = ""
 var clientDevicekey string = ""
 
 const (
@@ -98,36 +96,34 @@ const (
 //var db *gorm.DB
 
 // t is type 1:request,2:response
-func HeaderToDB(session * requests.Request,h http.Header,t string) ([]requests.Datas){
+func HeaderToDB(session *requests.Request, h http.Header, t string) []requests.Datas {
 
-    var d []requests.Datas
+	var d []requests.Datas
 
-    for n,v :=range h{
-        val := strings.Join(v,", ")
+	for n, v := range h {
+		val := strings.Join(v, ", ")
 
-        d = append(d,requests.Datas{"type":t,
-        "name":n,
-        "values":val,
-        })
-    }
-    return d
+		d = append(d, requests.Datas{"type": t,
+			"name":   n,
+			"values": val,
+		})
+	}
+	return d
 }
 
-func FormToDB(session *requests.Request,val url.Values,t string)([]requests.Datas){
+func FormToDB(session *requests.Request, val url.Values, t string) []requests.Datas {
 
+	var d []requests.Datas
+	for n, v := range val {
+		content := strings.Join(v, ", ")
 
-    var d []requests.Datas
-    for n,v :=range val{
-        content := strings.Join(v,", ")
-
-        d = append(d,requests.Datas{"type":t,
-        "name":n,
-        "values":content,
-        })
-    }
-    return d
+		d = append(d, requests.Datas{"type": t,
+			"name":   n,
+			"values": content,
+		})
+	}
+	return d
 }
-
 
 var stats struct {
 	ipdefrag            int
@@ -147,32 +143,31 @@ var stats struct {
 	overlapPackets      int
 }
 
-//const closeTimeout time.Duration = time.Hour * 24 // Closing inactive: TODO: from CLI
+// const closeTimeout time.Duration = time.Hour * 24 // Closing inactive: TODO: from CLI
 const closeTimeout time.Duration = time.Minute * 5 // Closing inactive: TODO: from CLI
-const timeout time.Duration = time.Minute * 3     // Pending bytes: TODO: from CLI
+const timeout time.Duration = time.Minute * 3      // Pending bytes: TODO: from CLI
 
 /*
  * HTTP part
  */
 
 type httpGroup struct {
-    req          *http.Request
-    reqFirstLine string
-    reqTimeStamp int64
-    reqFlag      int //0=new,1=found,2=finish
+	req          *http.Request
+	reqFirstLine string
+	reqTimeStamp int64
+	reqFlag      int //0=new,1=found,2=finish
 
-    resp          *http.Response
-    respFirstLine string
-    respTimeStamp int64
-    respFlag      int //0=new,1=found,2=finish
+	resp          *http.Response
+	respFirstLine string
+	respTimeStamp int64
+	respFlag      int //0=new,1=found,2=finish
 }
-
 
 type httpReader struct {
 	ident     string
 	isClient  bool
 	bytes     chan []byte
-    timeStamp chan int64
+	timeStamp chan int64
 	data      []byte
 	hexdump   bool
 	parent    *tcpStream
@@ -181,7 +176,7 @@ type httpReader struct {
 	dstip     string
 	srcport   string
 	dstport   string
-    httpstart int // 0 = new,1=find, 2 = old and find new
+	httpstart int // 0 = new,1=find, 2 = old and find new
 }
 
 func (h *httpReader) Read(p []byte) (int, error) {
@@ -193,27 +188,26 @@ func (h *httpReader) Read(p []byte) (int, error) {
 		return 0, io.EOF
 	}
 
-    ishttp,_ := detectHttp(h.data)
+	ishttp, _ := detectHttp(h.data)
 
-    if ishttp {
-        switch h.httpstart {
-            case 0: // run read,only copy 
-                h.httpstart = 1
-	            l := copy(p, h.data)
-                return l,nil
+	if ishttp {
+		switch h.httpstart {
+		case 0: // run read,only copy
+			h.httpstart = 1
+			l := copy(p, h.data)
+			return l, nil
 
-            case 1: //http read
-                h.httpstart = 2
-	            l := copy(p, h.data)
-	            h.data = h.data[l:]
-	            return l, nil
+		case 1: //http read
+			h.httpstart = 2
+			l := copy(p, h.data)
+			h.data = h.data[l:]
+			return l, nil
 
-            case 2: //http read
-                h.httpstart = 0
-		        return 0, io.EOF
-        }
-    }
-
+		case 2: //http read
+			h.httpstart = 0
+			return 0, io.EOF
+		}
+	}
 
 	l := copy(p, h.data)
 	h.data = h.data[l:]
@@ -253,108 +247,103 @@ func Debug(s string, a ...interface{}) {
 	}
 }
 
-
-func printHeader(h http.Header)string{
+func printHeader(h http.Header) string {
 	var logbuf string
 
-    for k,v := range h{
-        logbuf += fmt.Sprintf("%s :%s\n",k,v)
-    }
+	for k, v := range h {
+		logbuf += fmt.Sprintf("%s :%s\n", k, v)
+	}
 	return logbuf
 }
 
 // url.Values map[string][]string
 
-func printForm(v url.Values)string{
-    var logbuf string
+func printForm(v url.Values) string {
+	var logbuf string
 
-    logbuf += fmt.Sprint("\n**************\n")
-    for k,data := range v{
-        logbuf += fmt.Sprint(k,":")
-        for _,d := range data{
-            logbuf += fmt.Sprintf("%s",d)
-        }
-        logbuf += "\n"
-    }
-    logbuf += fmt.Sprint("**************\n")
+	logbuf += fmt.Sprint("\n**************\n")
+	for k, data := range v {
+		logbuf += fmt.Sprint(k, ":")
+		for _, d := range data {
+			logbuf += fmt.Sprintf("%s", d)
+		}
+		logbuf += "\n"
+	}
+	logbuf += fmt.Sprint("**************\n")
 
-    return logbuf
-}
-
-func printRequest(req *http.Request)string{
-
-    logbuf := fmt.Sprintf("\n")
-    logbuf += fmt.Sprintf("%s\n",req.Host)
-    logbuf += fmt.Sprintf("%s %s %s \n",req.Method, req.RequestURI, req.Proto)
-    logbuf += printHeader(req.Header)
-    logbuf += printForm(req.Form)
-    logbuf += printForm(req.PostForm)
-    if req.MultipartForm != nil {
-        logbuf += printForm(url.Values(req.MultipartForm.Value))
-    }
-    logbuf += fmt.Sprintf("\n")
 	return logbuf
 }
 
-func printResponse(resp *http.Response)string{
+func printRequest(req *http.Request) string {
 
-    logbuf := fmt.Sprintf("\n")
-    logbuf += fmt.Sprintf("%s %s\n",resp.Proto, resp.Status)
-    logbuf += printHeader(resp.Header)
-    logbuf += fmt.Sprintf("\n")
+	logbuf := fmt.Sprintf("\n")
+	logbuf += fmt.Sprintf("%s\n", req.Host)
+	logbuf += fmt.Sprintf("%s %s %s \n", req.Method, req.RequestURI, req.Proto)
+	logbuf += printHeader(req.Header)
+	logbuf += printForm(req.Form)
+	logbuf += printForm(req.PostForm)
+	if req.MultipartForm != nil {
+		logbuf += printForm(url.Values(req.MultipartForm.Value))
+	}
+	logbuf += fmt.Sprintf("\n")
+	return logbuf
+}
+
+func printResponse(resp *http.Response) string {
+
+	logbuf := fmt.Sprintf("\n")
+	logbuf += fmt.Sprintf("%s %s\n", resp.Proto, resp.Status)
+	logbuf += printHeader(resp.Header)
+	logbuf += fmt.Sprintf("\n")
 	return logbuf
 }
 
 // detect http infomation
 // isRequest isResponse
 
-func isRequest(data []byte) (bool,string) {
-    buf := bytes.NewBuffer(data)
-    reader := bufio.NewReader(buf)
-    tp := textproto.NewReader(reader)
+func isRequest(data []byte) (bool, string) {
+	buf := bytes.NewBuffer(data)
+	reader := bufio.NewReader(buf)
+	tp := textproto.NewReader(reader)
 
-    firstLine, _ := tp.ReadLine()
-    arr := strings.Split(firstLine, " ")
+	firstLine, _ := tp.ReadLine()
+	arr := strings.Split(firstLine, " ")
 
-    switch strings.TrimSpace(arr[0]) {
-    case "GET", "HEAD", "POST", "PUT", "DELETE", "TRACE", "CONNECT":
-        return true,firstLine
-    default:
-        return false,firstLine
-    }
+	switch strings.TrimSpace(arr[0]) {
+	case "GET", "HEAD", "POST", "PUT", "DELETE", "TRACE", "CONNECT":
+		return true, firstLine
+	default:
+		return false, firstLine
+	}
 }
 
+// server to client
+func isResponse(data []byte) (bool, string) {
+	buf := bytes.NewBuffer(data)
+	reader := bufio.NewReader(buf)
+	tp := textproto.NewReader(reader)
 
-//server to client
-func  isResponse(data []byte) (bool,string) {
-    buf := bytes.NewBuffer(data)
-    reader := bufio.NewReader(buf)
-    tp := textproto.NewReader(reader)
-
-    firstLine, _:= tp.ReadLine()
-    return strings.HasPrefix(strings.TrimSpace(firstLine), "HTTP/"),firstLine
+	firstLine, _ := tp.ReadLine()
+	return strings.HasPrefix(strings.TrimSpace(firstLine), "HTTP/"), firstLine
 }
-
 
 // 0 = response
 // 1 = request
 
-func detectHttp(data []byte) (bool ,int){
+func detectHttp(data []byte) (bool, int) {
 
-	ishttp,_ := isResponse(data)
-	if ishttp{
-		return true,0
+	ishttp, _ := isResponse(data)
+	if ishttp {
+		return true, 0
 	}
 
-	ishttp,_ = isRequest(data)
-	if ishttp{
-		return true,1 //request
+	ishttp, _ = isRequest(data)
+	if ishttp {
+		return true, 1 //request
 	}
 
-	return false,2
+	return false, 2
 }
-
-
 
 func (h *httpReader) DecompressBody(header http.Header, reader io.ReadCloser) (io.ReadCloser, bool) {
 	contentEncoding := header.Get("Content-Encoding")
@@ -380,48 +369,43 @@ func (h *httpReader) DecompressBody(header http.Header, reader io.ReadCloser) (i
 	}
 }
 
-
-
-
-
-
-func (h * httpReader) HandleRequest (timeStamp int64,firstline string) {
+func (h *httpReader) HandleRequest(timeStamp int64, firstline string) {
 
 	b := bufio.NewReader(h)
 
-    req, err := http.ReadRequest(b)
-    h.parent.UpdateReq(req,timeStamp,firstline)
+	req, err := http.ReadRequest(b)
+	h.parent.UpdateReq(req, timeStamp, firstline)
 
-    if err == io.EOF || err == io.ErrUnexpectedEOF {
-        return
-    } else if err != nil {
-        Error("HTTP-request", "HTTP Request error: %s (%v,%+v)\n", err, err, err)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return
+	} else if err != nil {
+		Error("HTTP-request", "HTTP Request error: %s (%v,%+v)\n", err, err, err)
 
-    } else {
+	} else {
 
-	    req.ParseMultipartForm(defaultMaxMemory)
+		req.ParseMultipartForm(defaultMaxMemory)
 
-        r,ok := h.DecompressBody(req.Header,req.Body)
+		r, ok := h.DecompressBody(req.Header, req.Body)
 		if ok {
 			defer r.Close()
 		}
 		contentType := req.Header.Get("Content-Type")
-		logbuf := fmt.Sprintf("%v->%v:%v->%v\n",h.srcip,h.dstip,h.srcport,h.dstport)
+		logbuf := fmt.Sprintf("%v->%v:%v->%v\n", h.srcip, h.dstip, h.srcport, h.dstport)
 		logbuf += printRequest(req)
 
-		if strings.Contains(contentType,"application/json"){
+		if strings.Contains(contentType, "application/json") {
 
 			bodydata, err := ioutil.ReadAll(r)
 			if err == nil {
 				var jsonValue interface{}
 				err = json.Unmarshal([]byte(bodydata), &jsonValue)
 				if err == nil {
-					logbuf += fmt.Sprintf("%#v\n",jsonValue)
+					logbuf += fmt.Sprintf("%#v\n", jsonValue)
 				}
 			}
 		}
 
-	   fmt.Printf("%s",logbuf)
+		fmt.Printf("%s", logbuf)
 	}
 
 }
@@ -429,133 +413,123 @@ func (h * httpReader) HandleRequest (timeStamp int64,firstline string) {
 func (h *httpReader) runClient(wg *sync.WaitGroup) {
 	defer wg.Done()
 
-	var p  = make([]byte,1900)
+	var p = make([]byte, 1900)
 
 	for {
 
-        h.httpstart = 0
-		l,err := h.Read(p)
-		if (err == io.EOF){
+		h.httpstart = 0
+		l, err := h.Read(p)
+		if err == io.EOF {
 			return
 		}
-		if( l > 8 ){
-			isReq,firstLine := isRequest(p)
-			if(isReq){ //start new request
-                timeStamp := <-h.timeStamp
+		if l > 8 {
+			isReq, firstLine := isRequest(p)
+			if isReq { //start new request
+				timeStamp := <-h.timeStamp
 
-			    h.HandleRequest(timeStamp,firstLine)
-		    }
-        }
+				h.HandleRequest(timeStamp, firstLine)
+			}
+		}
 	}
 
 }
 
-func (h * httpReader) HandleResponse (timeStamp int64,firstline string) {
+func (h *httpReader) HandleResponse(timeStamp int64, firstline string) {
 
+	b := bufio.NewReader(h)
 
-    b := bufio.NewReader(h)
+	resp, err := http.ReadResponse(b, nil)
+	h.parent.UpdateResp(resp, timeStamp, firstline)
 
-    resp, err := http.ReadResponse(b, nil)
-    h.parent.UpdateResp(resp,timeStamp,firstline)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return
+	} else if err != nil {
+		Error("HTTP-reponse", "HTTP Response error: %s (%v,%+v)\n", err, err, err)
 
-    if err == io.EOF || err == io.ErrUnexpectedEOF {
-        return
-    } else if err != nil {
-        Error("HTTP-reponse", "HTTP Response error: %s (%v,%+v)\n", err, err, err)
+	} else {
 
-    } else {
-
-        r,ok := h.DecompressBody(resp.Header,resp.Body)
+		r, ok := h.DecompressBody(resp.Header, resp.Body)
 		if ok {
 			defer r.Close()
 		}
 		contentType := resp.Header.Get("Content-Type")
-		logbuf := fmt.Sprintf("%v->%v:%v->%v\n",h.srcip,h.dstip,h.srcport,h.dstport)
+		logbuf := fmt.Sprintf("%v->%v:%v->%v\n", h.srcip, h.dstip, h.srcport, h.dstport)
 		logbuf += printResponse(resp)
 
-		if strings.Contains(contentType,"application/json"){
+		if strings.Contains(contentType, "application/json") {
 
 			bodydata, err := ioutil.ReadAll(r)
 			if err == nil {
 				var jsonValue interface{}
 				err = json.Unmarshal([]byte(bodydata), &jsonValue)
 				if err == nil {
-					logbuf += fmt.Sprintf("%#v\n",jsonValue)
+					logbuf += fmt.Sprintf("%#v\n", jsonValue)
 				}
 			}
-		} else if strings.Contains(contentType,"application/javascript"){
-            bodydata, err := ioutil.ReadAll(r)
-            bodylen := len(bodydata)
+		} else if strings.Contains(contentType, "application/javascript") {
+			bodydata, err := ioutil.ReadAll(r)
+			bodylen := len(bodydata)
 
-            if bodylen < *djslen{
-                *djslen = bodylen
-            }
-            if err == nil {
+			if bodylen < *djslen {
+				*djslen = bodylen
+			}
+			if err == nil {
 
-                logbuf += fmt.Sprintf("%s\n",string(bodydata[:*djslen]))
-            }
-		} else if strings.Contains(contentType,"text/html"){
-            bodydata, err := ioutil.ReadAll(r)
-            bodylen := len(bodydata)
+				logbuf += fmt.Sprintf("%s\n", string(bodydata[:*djslen]))
+			}
+		} else if strings.Contains(contentType, "text/html") {
+			bodydata, err := ioutil.ReadAll(r)
+			bodylen := len(bodydata)
 
-            if bodylen < *dhtmllen{
-                *dhtmllen = bodylen
-            }
-            if err == nil {
+			if bodylen < *dhtmllen {
+				*dhtmllen = bodylen
+			}
+			if err == nil {
 
-                logbuf += fmt.Sprintf("%s\n",string(bodydata[:*dhtmllen]))
-            }
-		} else if strings.Contains(contentType,*danystr){ //default text/plain
-            bodydata, err := ioutil.ReadAll(r)
-            bodylen := len(bodydata)
+				logbuf += fmt.Sprintf("%s\n", string(bodydata[:*dhtmllen]))
+			}
+		} else if strings.Contains(contentType, *danystr) { //default text/plain
+			bodydata, err := ioutil.ReadAll(r)
+			bodylen := len(bodydata)
 
-            if bodylen < *danylen{
-                *danylen = bodylen
-            }
-            if err == nil {
+			if bodylen < *danylen {
+				*danylen = bodylen
+			}
+			if err == nil {
 
-                logbuf += fmt.Sprintf("%s\n",string(bodydata[:*danylen]))
-            }
-        }
+				logbuf += fmt.Sprintf("%s\n", string(bodydata[:*danylen]))
+			}
+		}
 
-
-
-	   fmt.Printf("%s",logbuf)
+		fmt.Printf("%s", logbuf)
 	}
 
-
 }
-
-
 
 // response
 func (h *httpReader) runServer(wg *sync.WaitGroup) {
-    defer wg.Done()
+	defer wg.Done()
 
-	var p  = make([]byte,1900)
+	var p = make([]byte, 1900)
 
-    for {
-        h.httpstart = 0
-        l,err := h.Read(p)
-        if (err == io.EOF){
-            return
-        }
-        if( l > 8 ){
-            isResp,firstLine := isResponse(p)
-            if(isResp){ //start new response
-                timeStamp := <-h.timeStamp
+	for {
+		h.httpstart = 0
+		l, err := h.Read(p)
+		if err == io.EOF {
+			return
+		}
+		if l > 8 {
+			isResp, firstLine := isResponse(p)
+			if isResp { //start new response
+				timeStamp := <-h.timeStamp
 
-                h.HandleResponse(timeStamp,firstLine)
+				h.HandleResponse(timeStamp, firstLine)
 
-            }
-        }
-    }
-
-
+			}
+		}
+	}
 
 }
-
-
 
 /*
  * The TCP factory: returns a new Stream
@@ -567,9 +541,9 @@ type tcpStreamFactory struct {
 
 func (factory *tcpStreamFactory) New(net, transport gopacket.Flow, tcp *layers.TCP, ac reassembly.AssemblerContext) reassembly.Stream {
 	Debug("* NEW: %s %s\n", net, transport)
-	sip,dip := net.Endpoints()
-	srcip := fmt.Sprintf("%s",sip)
-	dstip := fmt.Sprintf("%s",dip)
+	sip, dip := net.Endpoints()
+	srcip := fmt.Sprintf("%s", sip)
+	dstip := fmt.Sprintf("%s", dip)
 
 	fsmOptions := reassembly.TCPSimpleFSMOptions{
 		SupportMissingEstablishment: *allowmissinginit,
@@ -585,29 +559,29 @@ func (factory *tcpStreamFactory) New(net, transport gopacket.Flow, tcp *layers.T
 	}
 	if stream.isHTTP {
 		stream.client = httpReader{
-			bytes:    make(chan []byte),
-			timeStamp:   make(chan int64),
-			ident:    fmt.Sprintf("%s %s", net, transport),
-			hexdump:  *hexdump,
-			parent:   stream,
-			isClient: true,
-			srcport: fmt.Sprintf("%d",tcp.SrcPort),
-			dstport: fmt.Sprintf("%d",tcp.DstPort),
-			srcip: srcip,
-			dstip: dstip,
-            httpstart:0,
+			bytes:     make(chan []byte),
+			timeStamp: make(chan int64),
+			ident:     fmt.Sprintf("%s %s", net, transport),
+			hexdump:   *hexdump,
+			parent:    stream,
+			isClient:  true,
+			srcport:   fmt.Sprintf("%d", tcp.SrcPort),
+			dstport:   fmt.Sprintf("%d", tcp.DstPort),
+			srcip:     srcip,
+			dstip:     dstip,
+			httpstart: 0,
 		}
 		stream.server = httpReader{
-			bytes:   make(chan []byte),
-			timeStamp:   make(chan int64),
-			ident:   fmt.Sprintf("%s %s", net.Reverse(), transport.Reverse()),
-			hexdump: *hexdump,
-			parent:  stream,
-			dstport: fmt.Sprintf("%d",tcp.SrcPort),
-			srcport: fmt.Sprintf("%d",tcp.DstPort),
-			dstip: srcip,
-			srcip: dstip,
-            httpstart:0,
+			bytes:     make(chan []byte),
+			timeStamp: make(chan int64),
+			ident:     fmt.Sprintf("%s %s", net.Reverse(), transport.Reverse()),
+			hexdump:   *hexdump,
+			parent:    stream,
+			dstport:   fmt.Sprintf("%d", tcp.SrcPort),
+			srcport:   fmt.Sprintf("%d", tcp.DstPort),
+			dstip:     srcip,
+			srcip:     dstip,
+			httpstart: 0,
 		}
 		factory.wg.Add(2)
 		go stream.client.runClient(&factory.wg)
@@ -647,189 +621,183 @@ type tcpStream struct {
 	server         httpReader
 	urls           []string
 	ident          string
-    all            []httpGroup
-    hg             sync.Mutex
+	all            []httpGroup
+	hg             sync.Mutex
 	sync.Mutex
 }
 
 //req = 1 is request
 //req = 0 is response
 
-func (t * tcpStream) NewhttpGroup(req int,timestamp int64) {
+func (t *tcpStream) NewhttpGroup(req int, timestamp int64) {
 
-    t.hg.Lock()
-    for _, hg := range  t.all {
-           //exist same req
-            if hg.reqTimeStamp == timestamp||hg.respTimeStamp == timestamp{
-                fmt.Println("Have same ",req,timestamp)
-                t.hg.Unlock()
-                return
-            }
+	t.hg.Lock()
+	for _, hg := range t.all {
+		//exist same req
+		if hg.reqTimeStamp == timestamp || hg.respTimeStamp == timestamp {
+			fmt.Println("Have same ", req, timestamp)
+			t.hg.Unlock()
+			return
+		}
 
-    }
+	}
 
-    if req == 1 {
-        //try find response 
-        for i, hg := range  t.all {
-            if hg.respFlag > 0 && hg.reqFlag == 0{
-                t.all[i].respFlag = 1
-                t.all[i].respTimeStamp = timestamp
-                t.hg.Unlock()
-                return
-            }
-        }
+	if req == 1 {
+		//try find response
+		for i, hg := range t.all {
+			if hg.respFlag > 0 && hg.reqFlag == 0 {
+				t.all[i].respFlag = 1
+				t.all[i].respTimeStamp = timestamp
+				t.hg.Unlock()
+				return
+			}
+		}
 
-        hg := httpGroup{
-            reqFlag : 1,
-            reqTimeStamp : timestamp,
-            respFlag : 0,
-        }
-        t.all = append(t.all,hg)
-        t.hg.Unlock()
+		hg := httpGroup{
+			reqFlag:      1,
+			reqTimeStamp: timestamp,
+			respFlag:     0,
+		}
+		t.all = append(t.all, hg)
+		t.hg.Unlock()
 
-    } else {
-        //try find request
-        for i, hg := range  t.all {
-            if hg.reqFlag > 0 && hg.respFlag == 0{
-                t.all[i].respFlag = 1
-                t.all[i].respTimeStamp = timestamp
-                t.hg.Unlock()
-                return
-            }
-        }
-        hg := httpGroup{
-            respFlag :1,
-            respTimeStamp :timestamp,
-            reqFlag :0,
-        }
-        t.all = append(t.all,hg)
-        t.hg.Unlock()
-    }
+	} else {
+		//try find request
+		for i, hg := range t.all {
+			if hg.reqFlag > 0 && hg.respFlag == 0 {
+				t.all[i].respFlag = 1
+				t.all[i].respTimeStamp = timestamp
+				t.hg.Unlock()
+				return
+			}
+		}
+		hg := httpGroup{
+			respFlag:      1,
+			respTimeStamp: timestamp,
+			reqFlag:       0,
+		}
+		t.all = append(t.all, hg)
+		t.hg.Unlock()
+	}
 
 }
 
-func (t * tcpStream) UpdateReq(req * http.Request,timestamp int64,firstLine string) {
+func (t *tcpStream) UpdateReq(req *http.Request, timestamp int64, firstLine string) {
 
-    t.hg.Lock()
-    for i, hg := range  t.all {
-         if hg.reqTimeStamp == timestamp {
-                t.all[i].req = req
-                t.all[i].reqFlag = 2
-                t.all[i].reqFirstLine = firstLine
-                if hg.respFlag == 2{
-                    t.Save(&t.all[i])
-                    if i < len(t.all){
-                        t.all = append(t.all[:i],t.all[i+1:]...)
-                    } else {
-                        t.all = t.all[:i]
-                    }
-                }
-         } //if timestramp
+	t.hg.Lock()
+	for i, hg := range t.all {
+		if hg.reqTimeStamp == timestamp {
+			t.all[i].req = req
+			t.all[i].reqFlag = 2
+			t.all[i].reqFirstLine = firstLine
+			if hg.respFlag == 2 {
+				t.Save(&t.all[i])
+				if i < len(t.all) {
+					t.all = append(t.all[:i], t.all[i+1:]...)
+				} else {
+					t.all = t.all[:i]
+				}
+			}
+		} //if timestramp
 
-    }//for
+	} //for
 
-    t.hg.Unlock()
+	t.hg.Unlock()
 }
 
-func (t * tcpStream) UpdateResp(resp * http.Response,timestamp int64,firstLine string) {
+func (t *tcpStream) UpdateResp(resp *http.Response, timestamp int64, firstLine string) {
 
+	t.hg.Lock()
+	for i, hg := range t.all {
+		if hg.respTimeStamp == timestamp {
+			t.all[i].resp = resp
+			t.all[i].respFlag = 2
+			t.all[i].respFirstLine = firstLine
+			if hg.reqFlag == 2 {
+				t.Save(&t.all[i])
+				if i < len(t.all) {
+					t.all = append(t.all[:i], t.all[i+1:]...)
+				} else {
+					t.all = t.all[:i]
+				}
+			}
+		} //if timestramp
 
-    t.hg.Lock()
-    for i, hg := range  t.all {
-         if hg.respTimeStamp == timestamp {
-                t.all[i].resp = resp
-                t.all[i].respFlag = 2
-                t.all[i].respFirstLine = firstLine
-                if hg.reqFlag == 2{
-                    t.Save(&t.all[i])
-                    if i < len(t.all){
-                        t.all = append(t.all[:i],t.all[i+1:]...)
-                    } else {
-                        t.all = t.all[:i]
-                    }
-                }
-         } //if timestramp
+	} //for
 
-    }//for
-
-    t.hg.Unlock()
+	t.hg.Unlock()
 }
-
 
 // save to database
-func (t * tcpStream)Save(hg * httpGroup){
+func (t *tcpStream) Save(hg *httpGroup) {
 
+	req := hg.req
+	resp := hg.resp
+	if req == nil || resp == nil || *serverurl == "" {
+		return
+	}
 
-        req := hg.req
-        resp := hg.resp
-        if (req == nil || resp == nil || *serverurl==""){
-            return
-        }
+	var h []requests.Datas
+	var f []requests.Datas
 
-        var h []requests.Datas
-        var f []requests.Datas
+	var postdata map[string]interface{}
 
-        var postdata map[string]interface{}
+	StatusCode := fmt.Sprintf("%d", resp.StatusCode)
 
+	postdata = make(map[string]interface{})
+	reqdata := requests.Datas{
+		"Host":       req.Host,
+		"Method":     req.Method,
+		"RequestURI": req.RequestURI,
+		"Proto":      req.Proto,
+		"StatusCode": StatusCode,
+		"SrcIp":      t.client.srcip,
+		"SrcPort":    t.client.srcport,
+		"DstIp":      t.client.dstip,
+		"DstPort":    t.client.dstport,
+	}
 
-        StatusCode := fmt.Sprintf("%d",resp.StatusCode)
+	session := requests.Requests()
 
-        postdata = make(map[string]interface{})
-        reqdata := requests.Datas{
-          "Host":req.Host,
-          "Method":req.Method,
-          "RequestURI":req.RequestURI,
-          "Proto":req.Proto,
-          "StatusCode":StatusCode,
-          "SrcIp":t.client.srcip,
-          "SrcPort":t.client.srcport,
-          "DstIp":t.client.dstip,
-          "DstPort":t.client.dstport,
-          }
+	postdata["request"] = reqdata
 
+	respdata := requests.Datas{
+		"Proto":      resp.Proto,
+		"StatusCode": StatusCode,
+		"SrcIp":      t.server.srcip,
+		"SrcPort":    t.server.srcport,
+		"DstIp":      t.server.dstip,
+		"DstPort":    t.server.dstport,
+	}
 
-        session := requests.Requests()
+	postdata["response"] = respdata
 
-        postdata["request"] = reqdata
+	h = append(h, HeaderToDB(session, req.Header, "1")...)
 
-        respdata := requests.Datas{
-              "Proto":resp.Proto,
-              "StatusCode": StatusCode,
-              "SrcIp":t.server.srcip,
-              "SrcPort":t.server.srcport,
-              "DstIp":t.server.dstip,
-              "DstPort":t.server.dstport,
-              }
+	f = append(f, FormToDB(session, req.Form, "1")...)
+	f = append(f, FormToDB(session, req.PostForm, "1")...)
+	if req.MultipartForm != nil {
+		f = append(f, FormToDB(session, url.Values(req.MultipartForm.Value), "1")...)
+	}
 
-        postdata["response"] = respdata
+	h = append(h, HeaderToDB(session, resp.Header, "2")...)
 
-        h = append(h,HeaderToDB(session,req.Header,"1")...)
+	postdata["header"] = h
+	postdata["form"] = f
 
-        f = append(f,FormToDB(session,req.Form,"1")...)
-        f = append(f,FormToDB(session,req.PostForm,"1")...)
-        if req.MultipartForm != nil {
-            f = append(f,FormToDB(session,url.Values(req.MultipartForm.Value),"1")...)
-        }
+	postdata["clientDevice"] = map[string]string{"clientid": clientDeviceid,
+		"clientkey": clientDevicekey}
 
-        h = append(h,HeaderToDB(session,resp.Header,"2")...)
-
-        postdata["header"] = h
-        postdata["form"] = f
-
-        postdata["clientDevice"] = map[string]string{"clientid":clientDeviceid,
-                            "clientkey":clientDevicekey}
-
-        session.PostJson(*serverurl+"requests?alldata=1",postdata)
+	session.PostJson(*serverurl+"requests?alldata=1", postdata)
 
 }
 
 func (t *tcpStream) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir reassembly.TCPFlowDirection, nextSeq reassembly.Sequence, start *bool, ac reassembly.AssemblerContext) bool {
 	// FSM
 
-    var isReq int
+	var isReq int
 
-	*start,isReq = detectHttp(tcp.Payload)
-
+	*start, isReq = detectHttp(tcp.Payload)
 
 	if !t.tcpstate.CheckState(tcp, dir) {
 		Error("FSM", "%s: Packet rejected by FSM (state:%s)\n", t.ident, t.tcpstate.String())
@@ -846,14 +814,14 @@ func (t *tcpStream) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir reassem
 	err := t.optchecker.Accept(tcp, ci, dir, nextSeq, start)
 	if err != nil {
 		// 重复的包，丢弃 drop
-        // 调试发现此包为以前序号的包，并且出现过。
+		// 调试发现此包为以前序号的包，并且出现过。
 		// mss BUG,server mss通过路由拆解成mss要求的包尺寸，
 		// 因此不能判断包大小大于mss为错包
-		if strings.Contains(fmt.Sprintf("%s",err)," > mss "){
+		if strings.Contains(fmt.Sprintf("%s", err), " > mss ") {
 			//  > mss 包 不丢弃
 		} else {
 
-			Error("OptionChecker", "%v ->%v : Packet rejected by OptionChecker: %s\n",  t.net, t.transport, err)
+			Error("OptionChecker", "%v ->%v : Packet rejected by OptionChecker: %s\n", t.net, t.transport, err)
 			stats.rejectOpt++
 			if !*nooptcheck {
 				return false
@@ -877,10 +845,10 @@ func (t *tcpStream) Accept(tcp *layers.TCP, ci gopacket.CaptureInfo, dir reassem
 		stats.rejectOpt++
 	}
 
-    // create new httpgroup,wait request+response
-    if *start {
-        t.NewhttpGroup(isReq,ci.Timestamp.UnixNano())
-    }
+	// create new httpgroup,wait request+response
+	if *start {
+		t.NewhttpGroup(isReq, ci.Timestamp.UnixNano())
+	}
 
 	return accept
 }
@@ -928,28 +896,28 @@ func (t *tcpStream) ReassembledSG(sg reassembly.ScatterGather, ac reassembly.Ass
 		return
 	}
 
-    //use timeStamp as match flag
-    timeStamp :=sg.CaptureInfo(0).Timestamp.UnixNano()
+	//use timeStamp as match flag
+	timeStamp := sg.CaptureInfo(0).Timestamp.UnixNano()
 	data := sg.Fetch(length)
-    if t.isHTTP {
+	if t.isHTTP {
 		if length > 0 {
 			if *hexdump {
 				Debug("Feeding http with:\n%s", hex.Dump(data))
 			}
 
-            ok,_:=detectHttp(data)
+			ok, _ := detectHttp(data)
 
 			//if dir == reassembly.TCPDirClientToServer && !t.reversed {
 			if dir == reassembly.TCPDirClientToServer {
 				t.client.bytes <- data
 				if ok {
-                    t.client.timeStamp <- timeStamp
-                }
+					t.client.timeStamp <- timeStamp
+				}
 			} else {
 				t.server.bytes <- data
 				if ok {
-                    t.server.timeStamp <- timeStamp
-                }
+					t.server.timeStamp <- timeStamp
+				}
 			}
 		}
 	}
@@ -965,22 +933,22 @@ func (t *tcpStream) ReassemblyComplete(ac reassembly.AssemblerContext) bool {
 	return false
 }
 
-func HandlerSig (){
+func HandlerSig() {
 
-    for {
-        select {
-        case <-signalChan:
-            fmt.Fprintf(os.Stderr, "\nCaught SIGINT: aborting %v\n",sysexit)
-            if sysexit == false{
-                sysexit = true
-            } else {
-                os.Exit(1) //Second ctrl+c system exit
-            }
-        }
-    }
+	for {
+		select {
+		case <-signalChan:
+			fmt.Fprintf(os.Stderr, "\nCaught SIGINT: aborting %v\n", sysexit)
+			if sysexit == false {
+				sysexit = true
+			} else {
+				os.Exit(1) //Second ctrl+c system exit
+			}
+		}
+	}
 }
 
-func main() {
+func main2() {
 	defer util.Run()()
 	var handle *pcap.Handle
 	var err error
@@ -994,8 +962,7 @@ func main() {
 	log.SetOutput(os.Stdout)
 	errorsMap = make(map[string]uint)
 
-    loadConfig()
-
+	loadConfig()
 
 	if *fname != "" {
 		if handle, err = pcap.OpenOffline(*fname); err != nil {
@@ -1037,10 +1004,10 @@ func main() {
 		}
 	} else {
 
-		bpffilter := fmt.Sprintf("tcp and port %d",*port)
+		bpffilter := fmt.Sprintf("tcp and port %d", *port)
 		if err = handle.SetBPFFilter(bpffilter); err != nil {
-            log.Fatal("BPF filter error:", err)
-        }
+			log.Fatal("BPF filter error:", err)
+		}
 
 	}
 
@@ -1059,7 +1026,7 @@ func main() {
 
 	signalChan = make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt)
-    go HandlerSig()
+	go HandlerSig()
 
 	for packet := range source.Packets() {
 		count++
@@ -1171,4 +1138,3 @@ func main() {
 		fmt.Printf(" %s:\t\t%d\n", e, errorsMap[e])
 	}
 }
-
