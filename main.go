@@ -5,13 +5,12 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"httpdump/gmtls"
 	"log"
 	"strings"
 )
 
 func main() {
-	pcapFile := "https.pcap"
+	pcapFile := "N1-SSL VPN.pcap"
 	handle, err := pcap.OpenOffline(pcapFile)
 	if err != nil {
 		log.Fatal(err)
@@ -57,8 +56,7 @@ func printPacketInfo(packet gopacket.Packet) {
 						tls2 := tlsLayer.(*layers.TLS)
 						fmt.Println("TLS found!")
 						for _, h := range tls2.Handshake {
-							info := gmtls.UnmarshalHandshake(h.Raw)
-							println(info)
+							println(h.HandshakeType)
 						}
 					}
 
