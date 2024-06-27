@@ -5,7 +5,6 @@ import (
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
-	"httpdump/gmtls"
 	"log"
 	"strings"
 )
@@ -27,47 +26,37 @@ func main() {
 	packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 	packetSource.SkipDecodeRecovery = true
 	packetSource.DecodeStreamsAsDatagrams = true
+	index := 1
 	for packet := range packetSource.Packets() {
-		printPacketInfo(packet)
+		printPacketInfo(index, packet)
+		index += 1
 	}
 }
 
-func printPacketInfo(packet gopacket.Packet) {
-	fmt.Println("--------------------------------")
+func printPacketInfo(index int, packet gopacket.Packet) {
 	ethernetLayer := packet.Layer(layers.LayerTypeEthernet)
 	if ethernetLayer != nil {
 		ethernetPacket, _ := ethernetLayer.(*layers.Ethernet)
-		fmt.Println("Source Mac: ", ethernetPacket.SrcMAC)
-		fmt.Println("Destination Mac: ", ethernetPacket.DstMAC)
-		fmt.Println("Ethernet type: ", ethernetPacket.EthernetType)
+		//fmt.Println("Source Mac: ", ethernetPacket.SrcMAC)
+		//fmt.Println("Destination Mac: ", ethernetPacket.DstMAC)
+		//fmt.Println("Ethernet type: ", ethernetPacket.EthernetType)
 		if ethernetPacket.EthernetType.String() == "IPv4" {
 			ipLayer := packet.Layer(layers.LayerTypeIPv4)
 			if ipLayer != nil {
-				ip, _ := ipLayer.(*layers.IPv4)
-				fmt.Printf("From %s to %s\n", ip.SrcIP, ip.DstIP)
-				fmt.Println("Protocol: ", ip.Protocol)
+				//ip, _ := ipLayer.(*layers.IPv4)
+				//fmt.Printf("From %s to %s\n", ip.SrcIP, ip.DstIP)
+				//fmt.Println("Protocol: ", ip.Protocol)
 				tcpLayer := packet.Layer(layers.LayerTypeTCP)
 				if tcpLayer != nil {
-					tcp, _ := tcpLayer.(*layers.TCP)
-					fmt.Printf("From port %d to %d\n", tcp.SrcPort, tcp.DstPort)
-					fmt.Println("Sequence number: ", tcp.Seq)
-					fmt.Println("TCP flags: ", tcpFlag(tcp.SYN, "SYN"), tcpFlag(tcp.FIN, "FIN"), tcpFlag(tcp.ACK, "ACK"))
+					//tcp, _ := tcpLayer.(*layers.TCP)
+					//fmt.Printf("From port %d to %d\n", tcp.SrcPort, tcp.DstPort)
+					//fmt.Println("Sequence number: ", tcp.Seq)
+					//fmt.Println("TCP flags: ", tcpFlag(tcp.SYN, "SYN"), tcpFlag(tcp.FIN, "FIN"), tcpFlag(tcp.ACK, "ACK"))
 					tlsLayer := packet.Layer(layers.LayerTypeTLS)
 					if tlsLayer != nil {
 						tls2 := tlsLayer.(*layers.TLS)
-						fmt.Println("TLS found!")
-						for _, h := range tls2.Handshake {
-							info := gmtls.UnmarshalHandshake(h.Raw)
-							println(info)
-						}
-					}
-
-					applicationLayer := packet.ApplicationLayer()
-					if applicationLayer != nil {
-						payload := string(applicationLayer.Payload())
-						if strings.HasPrefix(payload, "GET") || strings.HasPrefix(payload, "POST") {
-							fmt.Println("HTTP found!")
-							fmt.Println(payload)
+						if tls2.AppData == nil {
+							fmt.Println(index, "\t", tls2.Version.String(), "\t", strings.Join(tls2.Summaries, ", "))
 						}
 					}
 				}
