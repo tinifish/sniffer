@@ -10,7 +10,7 @@ import (
 )
 
 func main() {
-	pcapFile := "N1-SSL VPN.pcap"
+	pcapFile := "https.pcap"
 	handle, err := pcap.OpenOffline(pcapFile)
 	if err != nil {
 		log.Fatal(err)
@@ -55,7 +55,9 @@ func printPacketInfo(index int, packet gopacket.Packet) {
 					tlsLayer := packet.Layer(layers.LayerTypeTLS)
 					if tlsLayer != nil {
 						tls2 := tlsLayer.(*layers.TLS)
-						fmt.Println(index, ": ", strings.Join(tls2.Summaries, ", "))
+						if tls2.AppData == nil {
+							fmt.Println(index, "\t", tls2.Version.String(), "\t", strings.Join(tls2.Summaries, ", "))
+						}
 					}
 				}
 			}
